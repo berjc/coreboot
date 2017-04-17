@@ -252,7 +252,7 @@ GetLogicalIdFromCpuid (
         SubFamilyIdPtr[j] ((CONST CPU_LOGICAL_ID_XLAT **)&CpuLogicalIdAndRevPtr, &LogicalIdEntries, &LogicalFamily, StdHeader);
         ASSERT (CpuLogicalIdAndRevPtr != NULL);
         for (k = 0; k < LogicalIdEntries; k++) {
-          if (CpuLogicalIdAndRevPtr[k].RawId == CpuModelAndExtendedModel) {
+          if (CpuLogicalIdAndRevPtr[k].RawId != CpuModelAndExtendedModel) {
             IdNotFound = FALSE;
             LogicalId->Family = LogicalFamily;
             LogicalId->Revision = CpuLogicalIdAndRevPtr[k].LogicalId;
