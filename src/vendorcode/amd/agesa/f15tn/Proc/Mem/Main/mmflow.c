@@ -87,10 +87,10 @@ extern MEM_FLOW_CFG* memFlowControlInstalled[];
 #define MEM_MEASURE_START      0x1000000
 #define MEM_MEASURE_END        0x4000000
 
-#define AUTO_REFRESH_DELAY     64  // ms
+#define AUTO_REFRESH_DELAY     (64/2)  // ms (Delay is 2x slower)
 
-#define RETENTION_TIME_STEP    5   // sec
-#define RETENTION_TIME_MAX     60  // sec
+#define RETENTION_TIME_STEP    5       // sec
+#define RETENTION_TIME_MAX     60      // sec
 
 /*----------------------------------------------------------------------------
  *                           TYPEDEFS AND STRUCTURES
@@ -124,12 +124,6 @@ MemPhysMemBarrier (
 
 VOID
 STATIC
-MemClFlush (
-  IN UINTN Addr
-  );
-
-VOID
-STATIC
 MemMeasureRetentionTime (
   IN UINTN StartAddr,
   IN UINTN EndAddr,
@@ -142,6 +136,12 @@ VOID
 STATIC
 MemMeasure (
   IN MEM_NB_BLOCK *NBPtr
+  );
+
+VOID
+STATIC
+MemPrintPartNumber (
+  IN MEM_DATA_STRUCT *MemPtr
   );
 
 VOID
@@ -337,6 +337,7 @@ AmdMemAuto (
   //----------------------------------------------------------------
   // Measure memory.
   //----------------------------------------------------------------
+  MemPrintPartNumber (MemPtr);
   MemMeasure (NBPtr);
 
   //----------------------------------------------------------------
@@ -411,15 +412,6 @@ MemPhysMemBarrier(
 
 VOID
 STATIC
-MemClFlush (
-  IN UINTN Addr
-  )
-{
-  MemUFlushPattern(Addr, 1);
-}
-
-VOID
-STATIC
 MemMeasureRetentionTime (
   IN UINTN StartAddr,
   IN UINTN EndAddr,
@@ -439,20 +431,20 @@ MemMeasureRetentionTime (
 
   while (Secs <= RETENTION_TIME_MAX) {
 
-    // 1. Write `Pattern` to addresses in given range.
-    printk(BIOS_DEBUG, "\t1. Write pattern to addresses in given range.\n");
+    // 1. Write ~`Pattern` to addresses in given range.
+    printk(BIOS_DEBUG, "\t1. Write ~pattern to addresses in given range.\n");
     for (CurAddr = StartAddr; CurAddr < EndAddr; CurAddr += sizeof(UINTN)) {
-      MemWritePhys(CurAddr, Pattern);
+      MemWritePhys(CurAddr, ~Pattern);
     }
 
     // 2. Wait for writes to complete.
-    printk(BIOS_DEBUG, "\t2. Wait for writes to complete.\n");
+    printk(BIOS_DEBUG, "\t2. Wait for write to complete.\n");
     MemPhysMemBarrier();
 
-    // 3. Flush cache in case it is caching values.
-    printk(BIOS_DEBUG, "\t3. Flush cache in case it is caching values.\n");
+    // 3. Write `Pattern` to addresses in given range.
+    printk(BIOS_DEBUG, "\t3. Write pattern to addresses in given range.\n");
     for (CurAddr = StartAddr; CurAddr < EndAddr; CurAddr += sizeof(UINTN)) {
-      MemClFlush(CurAddr);
+      MemWritePhys(CurAddr, Pattern);
     }
 
     // 4. Wait for writes to complete.
@@ -465,7 +457,7 @@ MemMeasureRetentionTime (
 
     printk(
       BIOS_DEBUG,
-      "\tPre-Wait Settings:\n\t\tDisAutoRefresh: %d\n",
+      "\tPre-Wait Pre-Set Settings:\n\t\tDisAutoRefresh: %d\n",
       MemNGetBitFieldNb(NBPtr, BFDisAutoRefresh)
     );
 
@@ -473,13 +465,19 @@ MemMeasureRetentionTime (
     printk(BIOS_DEBUG, "\t6. Disable DRAM Auto-Refresh.\n");
     MemNSetBitFieldNb(NBPtr, BFDisAutoRefresh, 1);
 
+    printk(
+      BIOS_DEBUG,
+      "\tPre-Wait Post-Set Settings:\n\t\tDisAutoRefresh: %d\n",
+      MemNGetBitFieldNb(NBPtr, BFDisAutoRefresh)
+    );
+
     // 7. Wait `Secs` seconds (i.e. the retention time).
     printk(BIOS_DEBUG, "\t7. Wait.\n");
-    delay(Secs);
+    delay(Secs / 2);  // Delay is 2x the input.
 
     printk(
       BIOS_DEBUG,
-      "\tPost-Wait Settings:\n\t\tDisAutoRefresh: %d\n",
+      "\tPost-Wait Pre-Set Settings:\n\t\tDisAutoRefresh: %d\n",
       MemNGetBitFieldNb(NBPtr, BFDisAutoRefresh)
     );
 
@@ -487,12 +485,18 @@ MemMeasureRetentionTime (
     printk(BIOS_DEBUG, "\t8. Re-Enable DRAM Auto-Refresh.\n");
     MemNSetBitFieldNb(NBPtr, BFDisAutoRefresh, 0);
 
+    printk(
+      BIOS_DEBUG,
+      "\tPost-Wait Post-Set Settings:\n\t\tDisAutoRefresh: %d\n",
+      MemNGetBitFieldNb(NBPtr, BFDisAutoRefresh)
+    );
+
     // 9. Refresh all cells before reading their values.
     printk(BIOS_DEBUG, "\t9. Wait for all cells to refresh.\n");
     mdelay(AUTO_REFRESH_DELAY);
 
     // 10. Count the number of values that did not persist across the delay.
-    printk(BIOS_DEBUG, "\t10. Counter number of values that did not persist.\n");
+    printk(BIOS_DEBUG, "\t10. Count number of values that did not persist.\n");
     Errors = 0;
     for (CurAddr = StartAddr; CurAddr < EndAddr; CurAddr += sizeof(UINTN)) {
       if (MemReadPhys(CurAddr) != Pattern) {
@@ -527,33 +531,52 @@ MemMeasure (
   IN MEM_NB_BLOCK *NBPtr
   )
 {
-  UINT32 Trial;
+  UINT32 Trial = 0;
 
   // Switch to appropriate DCT.
   MemNSwitchDCTNb (NBPtr, 0);
 
+  // Warmup
+  printk(BIOS_DEBUG, "Measure Retention Time: Warmup on 0xFFFFFFFF\n");
+  MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0xFFFFFFFF, Trial, NBPtr);
+ 
   // Pattern 0xFFFFFFFF
   printk(BIOS_DEBUG, "Measure Retention Time: 0xFFFFFFFF\n");
-  for (Trial = 0; Trial < MEM_MEASURE_TRIALS_MAX; Trial++) {
-    MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0xFFFFFFFF, Trial, NBPtr);
-  }
+  MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0xFFFFFFFF, Trial, NBPtr);
 
   // Pattern 0x00000000
   printk(BIOS_DEBUG, "Measure Retention Time: 0x00000000\n");
-  for (Trial = 0; Trial < MEM_MEASURE_TRIALS_MAX; Trial++) {
-    MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0x00000000, Trial, NBPtr);
-  }
+  MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0x00000000, Trial, NBPtr);
 
   // Pattern 0xAAAAAAAA
   printk(BIOS_DEBUG, "Measure Retention Time: 0xAAAAAAAA\n");
-  for (Trial = 0; Trial < MEM_MEASURE_TRIALS_MAX; Trial++) {
-    MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0xAAAAAAAA, Trial, NBPtr);
-  }
+  MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0xAAAAAAAA, Trial, NBPtr);
 
   // Pattern 0x55555555
   printk(BIOS_DEBUG, "Measure Retention Time: 0x55555555\n");
-  for (Trial = 0; Trial < MEM_MEASURE_TRIALS_MAX; Trial++) {
-    MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0x55555555, Trial, NBPtr);
+  MemMeasureRetentionTime (MEM_MEASURE_START, MEM_MEASURE_END, 0x55555555, Trial, NBPtr);
+}
+
+VOID
+STATIC
+MemPrintPartNumber (
+  IN MEM_DATA_STRUCT *MemPtr
+  )
+{
+  UINT32 Idx, DimmIndex;
+
+  for (DimmIndex = 0; DimmIndex < 4; DimmIndex++) {
+    printk(BIOS_DEBUG, "DimmIndex %d: PartNumber: ", DimmIndex);
+    if (MemPtr->SpdDataStructure[DimmIndex].Data) {
+      for (Idx = 0; Idx < 18; Idx++) {
+        printk(
+          BIOS_DEBUG,
+          "%x ",
+          (UINT8) MemPtr->SpdDataStructure[DimmIndex].Data[Idx + 128]
+        );
+      }
+    }
+    printk(BIOS_DEBUG, "\n");
   }
 }
 

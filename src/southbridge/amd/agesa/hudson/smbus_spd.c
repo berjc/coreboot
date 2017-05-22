@@ -121,6 +121,24 @@ static int readspd (int iobase, int SmbusSlaveAddress, char *buffer, int count)
 			return error;
 		}
 	}
+
+	char tmp[18];
+	for (index = count; index < count + 18; index++)
+	{
+		error = readSmbusByte (iobase, SmbusSlaveAddress, &tmp [index - count]);
+		if (error) {
+			printk(BIOS_DEBUG, "Failed to Read PartNumber of SPD\n");
+			return error;
+		}
+	}
+
+	printk(BIOS_DEBUG, "PartNumber: ");
+	for (index = 0; index < 18; index++)
+	{
+		printk(BIOS_DEBUG, "%x ", tmp[index]);
+	}
+	printk(BIOS_DEBUG, "\n");
+
 	printk(BIOS_SPEW, "\n");
 	printk(BIOS_SPEW, "-------------FINISHED READING SPD-----------\n");
 
